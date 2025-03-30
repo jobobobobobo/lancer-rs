@@ -1,0 +1,96 @@
+* Crates
+** Assets
+Assets are as good as any a place to start out. Their only dependencies are in the bevy system, avian3d, and protocol, which we will explain later.
+
+GlobalAssets and LevelAssets are simple resources:
+#+NAME: assets
+#+BEGIN_SRC rust
+use avian3d::prelude::Collider;
+use bevy::prelude::*;
+
+#[derive(Resource, Default)]
+pub struct GlobalAssets {
+    pub character: Handle<Scene>,
+}
+
+#[derive(Resource, Default)]
+pub struct LevelAssets {
+    pub example_level: Handle<Scene>,
+}
+#+END_SRC
+
+#+BEGIN_NOTE
+Resources stand apart from Entities and Components in that there can only be one of them in the whole engine. They let you have global access to the ECS world. Common uses would be for settings, for caches, and interfacing with external libraries. Here, Resource is used because the scene handle represents a connection to a file, on an instanced basis.
+
+I am considering rewriting this if it becomes cumbersome. Since Lancer is about changing mechs and having a bunch of possibilities, I think the correct play is to have the character loaded in as a mesh compnent. But, I could be misunderstanding what this does.
+#+END_NOTE
+
+Meanwhile, back in the Assets library crate, we have a plugin (Bevy's native AssetPlugin helpfully renamed to BevyAssetPlugin). This plugin adds 3 systems: ~on_level_change~, ~check_asset_loading~, and ~postprocess_assets~, the first 2 of which both run during ~Update~, but ~check_asset_loading~ is only run if ~LevelState::Loading~, and the final system runs when we enter ~LevelState::Postprocess~.
+
+As an aside, here are the LevelStates.
+
+#+NAME: levelstates
+#+BEGIN_SRC rust
+#[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LevelState {
+    #[default]
+    Unloaded,
+    Loading,
+    Postprocess,
+    Loaded,
+}
+#+END_SRC
+
+~on_level_change~ uses Bevy Change Detection to kick off a match that lets you customize what you are doing each time the level changes entirely. The example has you load an asset to the ~example_level~ field of ~level_assets~. That's right - the template has you hard coding data for each level you add. Is that really so bad? I'll give it a chance. Then, it sets the ~next_level_state~ to ~Loading~.
+
+Next up is ~check_asset_loading~. This function just checks all the handles in LoadingAssets and checks that the option is ~Some~. If all assets are loaded, the function sets the ~next_state~ to ~PostProcess~.
+
+~posprocess_assets~ then iterates through every entity in the scene, and if they have a ~Mesh3d~ component, it pushes that entity onto a queue, and then processes the queue to insert Trimesh colliders and a Geometry marker.
+
+Some places I would like to improve, are whether I can have async loading instead of the queue -> process pattern, but that's only if I am having performance issues. The code also mentions that supporting Avian3d's collisions gaining the reflect trait would be nice to have special handling for. I would also like to be able to have markers for the head region of a character, which would happen there. One final improvement would be to integrate skein, which is a bevy-blender compatibility layer. This is actually pretty important, because it would mean I get a level editor basically for free.
+
+Next, we will explore the Common and Protocol libraries to see more of how the game fits together.
+
+** Common
+
+Common contains all of the code that is not protocol, but is common to both server and client.
+
+*** PlayerPlugin
+This plugin adds two systems: ~add_player_gameplay_components~ to the Update step when we are Loaded, and ~move_player~ to the FixedUpdate schedule.
+
+~add_player_gameplay_compoennts~ is going to be very important, as this is where the input is set up and the physics components get added. I think I would change this to use required components, and then to set up other components as I need them.
+
+~move_player~ is the heart of the movement system, so it will probably have lots and lots of iterations. As-is, it just sets every player's velocity to their ~mov_vec~ times their speed. First change I would make to this is to get rid of the const =PLAYER_MOVE_SPEED=.
+
+I will also need to add more code to set up the other input contexts. I plan to have an enum in each character's module which maps the ability inputs to actions, and possible override behaviors like Crouch.
+
+*** LevelPlugin
+This plugin adds ~level_loaded~ and ~add_level_gameplay_components~ with ~.chain()~, and runs them when LevelState changes to Loaded. ~level_load~ spawns the ~level_assets~ based on a match - another place I might have to change if I start using skein. Next, ~add_level_gameplay_components~ adds a ~RigidBody::Static~ to every entity with the ~Geometry~ marker.
+
+** Protocol
+
+Protocol is where the netcode lives. This crate registers compnents, messages, and input.
+
+*** Component
+
+Establishes a ~Player~ component which just wraps ~ClientId~. This would be where I add required components to all players. ~register_components~ sets up the Player, Position, Rotation, and Transform components to use interpolation and correction.
+
+*** Messages
+
+This section seems to repeat the ~Level~ struct? Anyway, it sets up several message structs: ServerWelcome, ClientLevelLoadComplete, and ClientHostRequestShutdown.That last one might get pruned, I think it relates to removed functionality.
+
+Then, an UnorderedReliable and Reliable channel are created. Finally, there is a ~register_messages~ function that registers the messages and adds the channels above.
+
+*** Input
+
+Input starts out with ~Move~ as the only member in the ~NetworkedInput~ enum. This is the first place I would start looking, as I would want to handle Actionlikes in parallel threads where possible. So, instead of putting everything into ~NetworkedInput~, I might prefer splitting it between moving and looking, abilities, communication, and utility or some other catchall. Maybe it is better to just have separate protocols for things like searching for servers, player input, server replication, and communication? Just some thoughts.
+
+We initialize the ~NetworkedInput~ plugin with lag compensation, and leave everything else default.
+
+** Launcher
+
+** Client
+
+** Server
+
+** Render
